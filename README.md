@@ -1,113 +1,104 @@
 # AI Backend
 
-Backend-only inference service for AI models.
+Standalone API-only inference backend for clients such as WooGit.
 
-## Purpose
+## Current implementation
 
-`ai-backend` is a standalone API environment for serving an interchangeable language model to client applications such as WooGit.
+The repository now contains a CPU-safe FastAPI foundation with a stable `/v1` contract and a replaceable `InferenceProvider` abstraction.
 
-The repository contains the backend, API contract, model/runtime configuration, and automated CPU-safe validation. It does **not** contain model weights and it is not intended to be a user-facing chat application.
+Implemented endpoints:
 
-## Core decisions
+- `GET /v1/health` — process health; does not require model execution.
+- `GET /v1/ready` — readiness state for the configured runtime.
+- `GET /v1/models` — exposes the currently configured model identifier.
+- `POST /v1/chat` — stable chat/inference contract.
 
-- **Model must be replaceable.** Application code must not be coupled to one model name, one model provider, or one GPU vendor.
-- **API only.** This project provides an inference API. UI/chat presentation belongs to the client application.
-- **Model weights are external.** Large model files must not be committed to GitHub. The runtime loads the configured model from its model source/storage when deployed on GPU infrastructure.
-- **GitHub CI is GPU-independent.** GitHub Actions must never require a GPU to validate or merge the project. CI tests cover API contracts, configuration, request validation, provider behavior with mocks/fakes, and other deterministic checks.
-- **GPU inference is a deployment/runtime concern.** Real model loading and inference are integration/deployment checks and run only in an explicitly provisioned GPU environment.
-- **First test model:** Qwen 3.5 9B. This is a runtime configuration choice, not a permanent architectural dependency.
+The model is configuration-driven through environment variables. The default first test model is `Qwen/Qwen3.5-9B`, but application code does not depend on that model. Qwen3.5-9B is an open-weight Qwen model with documented support in common inference runtimes. citeturn0search0turn0search2
 
-## Target architecture
+## Architecture
 
 ```text
-Client (WooGit / other app)
-          |
-          | HTTPS / JSON
-          v
-   AI Backend API
-          |
-          v
-   Inference Provider
-          |
-          +---- configured model
-          |
-          v
-     GPU Runtime
-          |
-          v
-     Model Weights
+WooGit / other client
+        |
+        | HTTPS + JSON
+        v
+  Stable /v1 API
+        |
+        v
+InferenceProvider
+        |
+        +---- configured model
+        |
+        v
+ GPU/runtime deployment
+        |
+        v
+ Model weights outside Git
 ```
 
-The API layer and inference provider are separated so that changing the model does not require changing the public API.
+Changing the model, GPU host, or inference runtime should not require a client API change.
 
-## Model configuration
-
-The active model is configuration, not hard-coded business logic. A deployment should be able to change the model by changing configuration/environment values and redeploying the runtime.
-
-Example concept:
+## Configuration
 
 ```text
-MODEL_ID=<configured-model>
-MODEL_REVISION=<optional-pinned-revision>
-MODEL_RUNTIME=<configured-runtime>
+MODEL_ID=Qwen/Qwen3.5-9B
+MODEL_REVISION=<optional pinned revision>
+MODEL_RUNTIME=external
+ENVIRONMENT=production
+AI_API_KEY=<optional API key>
 ```
 
-For the first GPU test, the configured model is Qwen 3.5 9B.
+The API does not accept a model name from WooGit. The backend owns model selection so the client remains independent from the serving implementation.
 
-## Testing policy
+## Chat contract
 
-### GitHub CI
+Request:
 
-GitHub Actions is responsible for fast, deterministic validation. It must not:
+```json
+{
+  "messages": [
+    {"role": "user", "content": "سلام"}
+  ],
+  "temperature": 0.7,
+  "max_tokens": 1024
+}
+```
 
-- download multi-gigabyte model weights;
-- require a CUDA device;
-- start a GPU runtime;
-- depend on GPU availability;
-- make paid or external GPU calls as a prerequisite for a green CI run.
+Response:
 
-The CI test suite should instead verify:
+```json
+{
+  "id": "req_xxx",
+  "model": "Qwen/Qwen3.5-9B",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "..."
+      }
+    }
+  ]
+}
+```
 
-- API request/response schemas;
-- configuration parsing and validation;
-- model-provider selection;
-- provider interface behavior using mocks/fakes;
-- authentication and error handling where implemented;
-- health/readiness behavior that does not require model execution;
-- formatting, linting, type checking, and unit tests.
+## Runtime boundary
 
-### GPU validation
+The repository intentionally does **not** download or commit model weights. The current provider is an explicit unconfigured runtime placeholder. Until a GPU runtime adapter is attached, `/v1/chat` returns `503` instead of pretending inference succeeded.
 
-Real model loading and generation are separate from GitHub CI. A GPU environment is used only for explicit integration/smoke validation of the configured model and runtime.
+This keeps the API and tests real while leaving GPU deployment as a separate integration layer.
 
-A GPU failure must not be hidden by changing, skipping, or weakening the normal unit tests. GPU tests must remain clearly identified as GPU integration tests.
+## Testing
 
-## API direction
+GitHub Actions runs deterministic Python tests on a normal CPU runner. It does not require CUDA, a GPU, model weights, or a paid external inference service.
 
-The first API surface is intentionally small. The backend should expose inference primitives rather than UI-specific behavior.
+The tests verify health behavior, provider substitution, response normalization, and the expected `503` behavior when no inference runtime is attached.
 
-Planned endpoints:
-
-- `GET /v1/health` — service health
-- `POST /v1/chat` — chat/inference request
-- `POST /v1/generate` — lower-level text generation when needed
-
-The exact request/response schemas will be documented before implementation and treated as an API contract.
+A separate GPU smoke test will be added when the actual runtime is selected. It must load the configured model and perform real inference; it will not replace or weaken the normal CI tests.
 
 ## Non-goals
 
-- No web chat UI in this repository.
-- No model weights committed to Git.
-- No permanent dependency on Qwen 3.5 9B.
+- No web chat UI.
+- No model weights in Git.
+- No permanent coupling to Qwen3.5-9B.
 - No GPU requirement for ordinary GitHub CI.
-- No provider-specific model API exposed directly to clients when it can be hidden behind the backend contract.
-
-## Initial implementation order
-
-1. Define architecture and API contract.
-2. Define a model/provider abstraction.
-3. Add configuration for the first test model: Qwen 3.5 9B.
-4. Implement API validation and deterministic unit tests.
-5. Add the GPU runtime/deployment configuration separately.
-6. Run an explicit GPU smoke test against the configured model.
-7. Keep model replacement possible without changing the client-facing API.
+- No direct exposure of a provider-specific API to WooGit.
